@@ -55,6 +55,7 @@ namespace sub::Spooner
 		std::pair<UINT16, UINT16> bindsGamepad = { INPUT_FRONTEND_RB, INPUT_FRONTEND_RIGHT };
 
 		bool bEnabled = false;
+		bool hasWarned = false;
 		bool bIsSomethingHeld = false;
 		bool bHeldEntityHasCollision = true;
 		EditingState editingState;
@@ -83,13 +84,13 @@ namespace sub::Spooner
 
 		bool IsHotkeyPressed()
 		{
-			bool bInSpoonerMenu = std::find(std::begin(Menu::currentArray), std::end(Menu::currentArray), SUB::SPOONER_MAIN) != std::end(Menu::currentArray);
+		bool bInSpoonerMenu = std::find(std::begin(Menu::submenuHistory), std::end(Menu::submenuHistory), SUB::SPOONER_MAIN) != std::end(Menu::submenuHistory);
 
 			if (!bInSpoonerMenu || !bIsSomethingHeld)
 			{
 				UINT8 index1 = bindsGamepad.first < 50 ? 0 : 2;
 				UINT8 index2 = bindsGamepad.second < 50 ? 0 : 2;
-				return Menu::bitController ? (IS_DISABLED_CONTROL_PRESSED(index1, bindsGamepad.first) && IS_DISABLED_CONTROL_JUST_PRESSED(index2, bindsGamepad.second)) : IsKeyJustUp(bindsKeyboard);
+				return Menu::usingControllerInput ? (IS_DISABLED_CONTROL_PRESSED(index1, bindsGamepad.first) && IS_DISABLED_CONTROL_JUST_PRESSED(index2, bindsGamepad.second)) : IsKeyJustUp(bindsKeyboard);
 			}
 			return false;
 		}
@@ -158,7 +159,7 @@ namespace sub::Spooner
 
 		void UpdatePreviewRotation()
 		{
-			if (modelPreviewInfo.entity.Exists() && Menu::currentsub != SUB::CLOSED)
+		if (modelPreviewInfo.entity.Exists() && Menu::activeSubmenu != SUB::CLOSED)
 			{
 				Menu::add_IB(INPUT_FRONTEND_RB, "");
 				Menu::add_IB(INPUT_FRONTEND_LB, "Rotate Preview");
@@ -394,7 +395,7 @@ namespace sub::Spooner
 				const Vector3& coordInFrontOfCam = freeCam.RaycastForCoord(Vector2(0.0f, 0.0f), 0, 160.0f, 3.0f);
 				GTAentity entityInFrontOfCam = freeCam.RaycastForEntity(Vector2(0.0f, 0.0f), 0, 160.0f);
 
-				if (Menu::bitController) // If controller
+				if (Menu::usingControllerInput) // If controller
 				{
 					float movementSensitivity = Settings::cameraMovementSensitivityGamepad;
 					//if (IS_DISABLED_CONTROL_PRESSED(2, INPUT_FRONTEND_LS)) movementSensitivity += 1.36f * movementSensitivity;
@@ -459,18 +460,18 @@ namespace sub::Spooner
 						freeCam.SetRotation(nextRotFinal);
 					}
 
-					if (Menu::currentsub == SUB::CLOSED)
+					if (Menu::activeSubmenu == SUB::CLOSED)
 					{
 						Menu::add_IB(INPUT_VEH_EXIT, "Open main menu");
 						if (IS_DISABLED_CONTROL_JUST_PRESSED(2, INPUT_VEH_EXIT))
 						{
-							memset(Menu::currentArray, 0, sizeof(Menu::currentArray));
-							memset(Menu::currentop_ar, 0, sizeof(Menu::currentop_ar));
-							Menu::currentArray[0] = SUB::MAINMENU;
-							Menu::currentop_ar[0] = 1;
-							Menu::currentArrayIndex = 0;
+							memset(Menu::submenuHistory, 0, sizeof(Menu::submenuHistory));
+							memset(Menu::optionSelectionHistory, 0, sizeof(Menu::optionSelectionHistory));
+							Menu::submenuHistory[0] = SUB::MAINMENU;
+							Menu::optionSelectionHistory[0] = 1;
+							Menu::menuHistoryIndex = 0;
 							Menu::NewSetMenu(SUB::SPOONER_MAIN);
-							Menu::currentop = 2;
+							Menu::selectedOptionIndex = 2;
 						}
 
 						if (!bIsSomethingHeld)
@@ -483,11 +484,11 @@ namespace sub::Spooner
 								{
 									newMarkerPtr->m_position.z += (newMarkerPtr->m_scale / 2);
 									SelectedMarker = newMarkerPtr;
-									memset(Menu::currentArray, 0, sizeof(Menu::currentArray));
-									memset(Menu::currentop_ar, 0, sizeof(Menu::currentop_ar));
-									Menu::currentArray[0] = SUB::MAINMENU;
-									Menu::currentop_ar[0] = 1;
-									Menu::currentArrayIndex = 0;
+									memset(Menu::submenuHistory, 0, sizeof(Menu::submenuHistory));
+									memset(Menu::optionSelectionHistory, 0, sizeof(Menu::optionSelectionHistory));
+									Menu::submenuHistory[0] = SUB::MAINMENU;
+									Menu::optionSelectionHistory[0] = 1;
+									Menu::menuHistoryIndex = 0;
 									Menu::NewSetMenu(SUB::SPOONER_MANAGEMARKERS_INMARKER);
 								}
 							}
@@ -585,7 +586,7 @@ namespace sub::Spooner
 								break;
 							}
 
-							if (Menu::currentsub == SUB::CLOSED)
+							if (Menu::activeSubmenu == SUB::CLOSED)
 							{
 								Menu::add_IB(INPUT_FRONTEND_RT, "Open property menu");
 								switch (spoonerModeMode)
@@ -644,7 +645,7 @@ namespace sub::Spooner
 							}
 							bIsSomethingHeld = false;
 
-							if (Menu::currentsub == SUB::CLOSED)
+							if (Menu::activeSubmenu == SUB::CLOSED)
 							{
 								Menu::add_IB(INPUT_FRONTEND_RT, "Open property menu");
 								Menu::add_IB(INPUT_FRONTEND_LT, "Move entity around (hold)");
@@ -680,11 +681,11 @@ namespace sub::Spooner
 							{
 								SpoonerMode::SetAsSelectedEntity(currentEnt);
 							}
-							memset(Menu::currentArray, 0, sizeof(Menu::currentArray));
-							memset(Menu::currentop_ar, 0, sizeof(Menu::currentop_ar));
-							Menu::currentArray[0] = SUB::MAINMENU;
-							Menu::currentop_ar[0] = 1;
-							Menu::currentArrayIndex = 0;
+							memset(Menu::submenuHistory, 0, sizeof(Menu::submenuHistory));
+							memset(Menu::optionSelectionHistory, 0, sizeof(Menu::optionSelectionHistory));
+							Menu::submenuHistory[0] = SUB::MAINMENU;
+							Menu::optionSelectionHistory[0] = 1;
+							Menu::menuHistoryIndex = 0;
 							Menu::NewSetMenu(SUB::SPOONER_SELECTEDENTITYOPS);
 						}
 					}
@@ -768,18 +769,18 @@ namespace sub::Spooner
 						freeCam.SetRotation(nextRotFinal);
 					}
 
-					if (Menu::currentsub == SUB::CLOSED)
+					if (Menu::activeSubmenu == SUB::CLOSED)
 					{
 						Menu::add_IB(INPUT_VEH_EXIT, "Open main menu");
 						if (IS_DISABLED_CONTROL_JUST_PRESSED(2, INPUT_VEH_EXIT))
 						{
-							memset(Menu::currentArray, 0, sizeof(Menu::currentArray));
-							memset(Menu::currentop_ar, 0, sizeof(Menu::currentop_ar));
-							Menu::currentArray[0] = SUB::MAINMENU;
-							Menu::currentop_ar[0] = 1;
-							Menu::currentArrayIndex = 0;
+							memset(Menu::submenuHistory, 0, sizeof(Menu::submenuHistory));
+							memset(Menu::optionSelectionHistory, 0, sizeof(Menu::optionSelectionHistory));
+							Menu::submenuHistory[0] = SUB::MAINMENU;
+							Menu::optionSelectionHistory[0] = 1;
+							Menu::menuHistoryIndex = 0;
 							Menu::NewSetMenu(SUB::SPOONER_MAIN);
-							Menu::currentop = 2;
+							Menu::selectedOptionIndex = 2;
 						}
 
 						if (!bIsSomethingHeld)
@@ -792,11 +793,11 @@ namespace sub::Spooner
 								{
 									newMarkerPtr->m_position.z += (newMarkerPtr->m_scale / 2);
 									SelectedMarker = newMarkerPtr;
-									memset(Menu::currentArray, 0, sizeof(Menu::currentArray));
-									memset(Menu::currentop_ar, 0, sizeof(Menu::currentop_ar));
-									Menu::currentArray[0] = SUB::MAINMENU;
-									Menu::currentop_ar[0] = 1;
-									Menu::currentArrayIndex = 0;
+									memset(Menu::submenuHistory, 0, sizeof(Menu::submenuHistory));
+									memset(Menu::optionSelectionHistory, 0, sizeof(Menu::optionSelectionHistory));
+									Menu::submenuHistory[0] = SUB::MAINMENU;
+									Menu::optionSelectionHistory[0] = 1;
+									Menu::menuHistoryIndex = 0;
 									Menu::NewSetMenu(SUB::SPOONER_MANAGEMARKERS_INMARKER);
 								}
 							}
@@ -895,7 +896,7 @@ namespace sub::Spooner
 								break;
 							}
 
-							if (Menu::currentsub == SUB::CLOSED)
+							if (Menu::activeSubmenu == SUB::CLOSED)
 							{
 								Menu::add_IB(INPUT_CURSOR_CANCEL, "Open property menu");
 								switch (spoonerModeMode)
@@ -956,7 +957,7 @@ namespace sub::Spooner
 							}
 							bIsSomethingHeld = false;
 
-							if (Menu::currentsub == SUB::CLOSED)
+							if (Menu::activeSubmenu == SUB::CLOSED)
 							{
 								Menu::add_IB(INPUT_CURSOR_CANCEL, "Open property menu");
 								Menu::add_IB(INPUT_CURSOR_ACCEPT, "Move entity around (hold)");
@@ -992,11 +993,11 @@ namespace sub::Spooner
 							{
 								SpoonerMode::SetAsSelectedEntity(currentEnt);
 							}
-							memset(Menu::currentArray, 0, sizeof(Menu::currentArray));
-							memset(Menu::currentop_ar, 0, sizeof(Menu::currentop_ar));
-							Menu::currentArray[0] = SUB::MAINMENU;
-							Menu::currentop_ar[0] = 1;
-							Menu::currentArrayIndex = 0;
+							memset(Menu::submenuHistory, 0, sizeof(Menu::submenuHistory));
+							memset(Menu::optionSelectionHistory, 0, sizeof(Menu::optionSelectionHistory));
+							Menu::submenuHistory[0] = SUB::MAINMENU;
+							Menu::optionSelectionHistory[0] = 1;
+							Menu::menuHistoryIndex = 0;
 							Menu::NewSetMenu(SUB::SPOONER_SELECTEDENTITYOPS);
 						}
 					}
@@ -1078,16 +1079,16 @@ namespace sub::Spooner
 
 		void TurnOn()
 		{
-			if (!g_menuNotOpenedYet)
+			if (!menuHasNotOpened)
 			{
 				SpoonerMode::bEnabled = true;
 				sub::Spooner::ImGuiSpooner::SetVisible(true);
-				if (Menu::currentsub != SUB::CLOSED)
+				if (Menu::activeSubmenu != SUB::CLOSED)
 					Game::Print::PrintBottomLeft("~b~Note:~s~ Spooner Mode instructions only appear when Menyoo is closed.");
 			}
 			else
 			{
-				Game::Print::PrintBottomCentre("~r~Error:~s~ Menu not opened yet.");
+				Game::Print::ShowNotification("~r~Error:", "Menu not opened yet.");
 			}
 		}
 		void TurnOff()
@@ -1119,13 +1120,13 @@ namespace sub::Spooner
 			                 : editingState.precisionScale;
 
 			static DWORD lastSensitivityChange = 0;
-			if (IsKeyJustUp(VirtualKey::OEMPlus) && GetTickCount() - lastSensitivityChange > 200)
+			if ((IsKeyJustUp(VirtualKey::OEMPlus) || (IsKeyJustUp(VirtualKey::Add))) && GetTickCount() - lastSensitivityChange > 200)
 			{
 				if (precision < 10.0f) precision *= 10;
 				lastSensitivityChange = GetTickCount();
 				Game::Print::PrintBottomCentre("Sensitivity: ~b~" + std::to_string(precision), 3000);
 			}
-			if (IsKeyJustUp(VirtualKey::OEMMinus) && GetTickCount() - lastSensitivityChange > 200)
+			if ((IsKeyJustUp(VirtualKey::OEMMinus) || (IsKeyJustUp(VirtualKey::Subtract))) && GetTickCount() - lastSensitivityChange > 200)
 			{
 				if (precision > 0.0001f) precision /= 10;
 				lastSensitivityChange = GetTickCount();
@@ -1158,52 +1159,45 @@ namespace sub::Spooner
 
 		void DrawEditingHUD()
 		{
-			constexpr float HUD_LINE_HEIGHT = 0.025f;
-			const Vector2 HUD_FONT_SIZE(0.35f, 0.35f);
-			constexpr float hudX = 0.02f;
-			float hudY = 0.8f;
-
-			auto drawText = [&](const std::string& text, RGBA colour = {255, 255, 255, 255})
+			if (!bEnabled && !hasWarned)
 			{
-				Game::Print::SetupDraw(GTAfont::Arial, HUD_FONT_SIZE, false, false, true, colour);
-				Game::Print::drawstring(text, hudX, hudY);
-				hudY += HUD_LINE_HEIGHT;
-			};
-
-			if (!bEnabled)
-			{
-				drawText("~r~Entity manipulation requires the Spooner Camera.");
-				drawText("~b~Press F9:~w~ Enable Spooner Mode.");
+				Game::Print::ShowNotification("Entity manipulation requires the Spooner Camera.", "~(b~Press F9:~w~ Enable Spooner Mode.",5);
+				hasWarned = true;	
 				return;
 			}
 
 			if (editingState.mode == eEditMode::Disabled)
 			{
-				drawText("~r~Entity manipulation DISABLED.");
-				drawText("~b~Press B:~w~ Enable keyboard controls or gizmo editing mode.");
+				Menu::add_IB(VirtualKey::B, "Keyboard Controls");
 			}
 			else if (editingState.mode == eEditMode::Keyboard)
 			{
 				if (editingState.transformMode == eTransformMode::Rotation)
 				{
-					drawText("~y~Rotation Mode:");
-					drawText("~b~W/S: ~w~Pitch+ / Pitch-");
-					drawText("~b~A/D: ~w~Yaw+ / Yaw-");
-					drawText("~b~E/Q: ~w~Roll+ / Roll-");
-					drawText("~b~=/-: ~w~+/- Sensitivity");
-					drawText("~b~R: ~w~Edit position");
+					Menu::add_IB(VirtualKey::Subtract, "Sensitivity");
+					Menu::add_IB(VirtualKey::Add, "Sensitivity");
+					Menu::add_IB(VirtualKey::D, "Roll-");
+					Menu::add_IB(VirtualKey::A, "Roll+");
+					Menu::add_IB(VirtualKey::Q, "Yaw-");
+					Menu::add_IB(VirtualKey::E, "Yaw+");
+					Menu::add_IB(VirtualKey::S, "Pitch-");
+					Menu::add_IB(VirtualKey::W, "Pitch+");
+					Menu::add_IB(VirtualKey::R, "Edit Position");
 				}
 				else
 				{
-					drawText("~y~Position Mode:");
-					drawText("~b~W/S: ~w~X+ / X-");
-					drawText("~b~A/D: ~w~Y+ / Y-");
-					drawText("~b~E/Q: ~w~Z+ / Z-");
-					drawText("~b~=/-: ~w~+/- Sensitivity");
-					drawText("~b~R: ~w~Edit rotation");
+					Menu::add_IB(VirtualKey::Subtract, "Sensitivity");
+					Menu::add_IB(VirtualKey::Add, "Sensitivity");
+					Menu::add_IB(VirtualKey::Q, "Z-");
+					Menu::add_IB(VirtualKey::E, "Z+");
+					Menu::add_IB(VirtualKey::D, "Y-");
+					Menu::add_IB(VirtualKey::A, "Y+");
+					Menu::add_IB(VirtualKey::S, "X-");
+					Menu::add_IB(VirtualKey::W, "X+");
+					Menu::add_IB(VirtualKey::R, "Edit Rotation");
 				}
-				drawText("~b~ALT: ~w~Copy entity");
-				drawText("~b~B: ~w~Switch to gizmo / disable controls.");
+				Menu::add_IB(VirtualKey::C, "Copy");
+				Menu::add_IB(VirtualKey::B, "Gizmo Controls");
 			}
 			else if (editingState.mode == eEditMode::Gizmo)
 			{
@@ -1211,16 +1205,16 @@ namespace sub::Spooner
 				switch (editingState.transformMode)
 				{
 					case eTransformMode::Rotation: modeName = "Rotation"; break;
-					case eTransformMode::Scale:    modeName = "Scale";    break;
-					default:                             modeName = "Position"; break;
+					case eTransformMode::Scale:  modeName = "Scale";    break;
+					default:                              modeName = "Position"; break;
 				}
-				drawText("~y~Gizmo Mode ~s~(" + modeName + " Mode):");
-				drawText("~b~Left Click:~w~ Grab axis handle");
-				drawText("~b~R:~w~ Cycle mode");
-				drawText(editingState.cameraLocked ? "~b~C:~w~ Unlock camera" : "~b~C:~w~ Lock camera");
-				drawText(editingState.localSpace ? "~b~L:~w~ Edit in world space" : "~b~L:~w~ Edit in local space");
-				drawText("~b~ALT:~w~ Copy entity");
-				drawText("~b~B:~w~ Disable gizmo mode");
+
+				Menu::add_IB(INPUT_CURSOR_ACCEPT, "Grab axis handle (" + modeName + " Mode)");
+				Menu::add_IB(VirtualKey::R, "Cycle mode");
+				Menu::add_IB(VirtualKey::V, editingState.cameraLocked ? "Unlock camera" : "Lock camera");
+				Menu::add_IB(VirtualKey::L, editingState.localSpace ? "Edit in world space" : "Edit in local space");
+				Menu::add_IB(VirtualKey::C, "Copy");
+				Menu::add_IB(VirtualKey::B, "Disable Controls");
 			}
 		}
 
@@ -1266,7 +1260,7 @@ namespace sub::Spooner
 			lastRToggle = currentRToggle;
 
 			// toggling camera lock
-			if (editingState.mode != eEditMode::Disabled && IsKeyJustUp(VirtualKey::C))
+			if (editingState.mode != eEditMode::Disabled && IsKeyJustUp(VirtualKey::V))
 			{
 				editingState.cameraLocked = !editingState.cameraLocked;
 			}
@@ -1277,14 +1271,14 @@ namespace sub::Spooner
 				editingState.localSpace = !editingState.localSpace;
 			}
 
-			// make a quick copy of an entity by clicking ALT in editing modes
-			if (editingState.mode != eEditMode::Disabled && IsKeyJustUp(VirtualKey::Menu))
+			// make a quick copy of an entity by clicking C in editing modes
+			if (editingState.mode != eEditMode::Disabled && IsKeyJustUp(VirtualKey::C))
 			{
 				if (selectedEntity.handle.Exists())
 				{
 					const SpoonerEntity& copiedEntity = EntityManagement::CopyEntity(selectedEntity, EntityManagement::GetEntityIndexInDb(selectedEntity) >= 0, true, Submenus::_copyEntTexterValue);
 					selectedEntity = copiedEntity;
-					Game::Print::PrintBottomCentre("Entity copied.", 2500);
+					Game::Print::ShowNotification("Entity copied.", 2.5f);
 				}
 			}
 

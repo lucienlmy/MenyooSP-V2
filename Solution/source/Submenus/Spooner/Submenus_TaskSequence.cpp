@@ -12,7 +12,10 @@
 #include "..\..\macros.h"
 
 #include "..\..\Menu\Menu.h"
+#include "..\..\Menu\MenuCategory.h"
 #include "..\..\Menu\Routine.h"
+
+#include <iterator>
 
 #include "..\..\Natives\natives2.h"
 #include "..\..\Scripting\enums.h"
@@ -260,7 +263,7 @@ namespace sub::Spooner
 						{
 							thisTargetEnt = e.handle;
 						}
-						if (*Menu::currentopATM == Menu::printingop)
+						if (Menu::IsLastDrawnOptionSelected())
 							EntityManagement::ShowArrowAboveEntity(e.handle, RGBA(0, 255, 0, 200));
 					}
 				}
@@ -416,10 +419,10 @@ namespace sub::Spooner
 				{
 					AddOption("~italic~" + cit->ToString(), null);
 
-					if (Menu::printingop == *Menu::currentopATM)
+					if (Menu::IsLastDrawnOptionSelected())
 					{
 						bool bRemoveCoordPressed = false;
-						if (Menu::bitController)
+						if (Menu::usingControllerInput)
 						{
 							Menu::add_IB(INPUT_SCRIPT_RLEFT, "Remove coord");
 							bRemoveCoordPressed = IS_DISABLED_CONTROL_JUST_PRESSED(2, INPUT_SCRIPT_RLEFT) != 0;
@@ -481,7 +484,7 @@ namespace sub::Spooner
 
 				bool bRadius_plus = false, bRadius_minus = false;
 				AddNumber("Radius", thisRadius, 0, null, bRadius_plus, bRadius_minus);
-				if (*Menu::currentopATM == Menu::printingop)
+				if (Menu::IsLastDrawnOptionSelected())
 					EntityManagement::DrawRadiusDisplayingMarker(selectedEntity.handle.GetPosition(), thisRadius);
 				if (bRadius_plus) { if (thisRadius < FLT_MAX) thisRadius += 1.0f; }
 				if (bRadius_minus) { if (thisRadius > 0.0f) thisRadius -= 1.0f; }
@@ -506,7 +509,7 @@ namespace sub::Spooner
 
 				bool bSearchRadius_plus = false, bSearchRadius_minus = false;
 				AddNumber("Search Radius", thisSearchRadius, 0, null, bSearchRadius_plus, bSearchRadius_minus);
-				if (*Menu::currentopATM == Menu::printingop)
+				if (Menu::IsLastDrawnOptionSelected())
 					EntityManagement::DrawRadiusDisplayingMarker(selectedEntity.handle.GetPosition(), thisSearchRadius);
 				if (bSearchRadius_plus) { if (thisSearchRadius < FLT_MAX) thisSearchRadius += 1.0f; }
 				if (bSearchRadius_minus) { if (thisSearchRadius > 0.0f) thisSearchRadius -= 1.0f; }
@@ -588,19 +591,49 @@ namespace sub::Spooner
 						}
 					}
 				}
-
-				std::vector<std::pair<std::string, std::string>> vFavAnims;
-				GetFavouriteAnimations(vFavAnims);
-				if (!vFavAnims.empty())
+				AddBreak("---Favourites---");
+				
+				static std::string favSearchStr;
+				bool searchPressed = false;
+				AddOption(favSearchStr.empty() ? "SEARCH FAVOURITES" : boost::to_upper_copy(favSearchStr), searchPressed, nullFunc, -1, true);
+				if (searchPressed)
 				{
-					AddBreak("---Favourites---");
-					for (auto& animFav : vFavAnims)
+					std::string newSearch = Game::InputBox(favSearchStr, 126U, "SEARCH FAVOURITES", favSearchStr);
+					boost::to_lower(newSearch);
+					if (newSearch != favSearchStr)
 					{
-						bool bAnimFavPressed = false;
-						AddTickol(animFav.first + ", " + animFav.second, (animFav.first == tskPtr->animDict && animFav.second == tskPtr->animName), bAnimFavPressed, bAnimFavPressed); if (bAnimFavPressed)
+						favSearchStr = newSearch;
+						sub::s_favCache.needsRebuild = true;
+					}
+				}
+				if (sub::s_favCache.needsRebuild)
+					sub::RebuildFavCache(favSearchStr);
+
+				if (!sub::s_favCache.sortedCategoryNames.empty())
+				{
+					MenuCategory::ResetCategoryState();
+					for (auto& cat : sub::s_favCache.sortedCategoryNames)
+					{
+						auto it = sub::s_favCache.animationsByCategory.find(cat);
+						if (it == sub::s_favCache.animationsByCategory.end())
+							continue;
+
+						auto& anims = it->second;
+						std::string catDisplay = cat.empty() ? "UNORDERED" : cat;
+						std::string catLabel = "— ~b~" + catDisplay + "~s~ ~c~(" + std::to_string(anims.size()) + " anims)~s~";
+
+						if (MenuCategory::AddCategory(catLabel))
 						{
-							tskPtr->animDict = animFav.first;
-							tskPtr->animName = animFav.second;
+							for (auto& fav : anims)
+							{
+								bool bAnimFavPressed = false;
+								AddTickol(fav.dict + ", " + fav.name, (fav.dict == tskPtr->animDict && fav.name == tskPtr->animName), bAnimFavPressed, bAnimFavPressed);
+								if (bAnimFavPressed)
+								{
+									tskPtr->animDict = fav.dict;
+									tskPtr->animName = fav.name;
+								}
+							}
 						}
 					}
 				}
@@ -630,75 +663,35 @@ namespace sub::Spooner
 
 				AddTitle("Settings");
 
-				bool bSpeed_plus = false, bSpeed_minus = false, bSpeed_input = false;
-				AddNumber("Blend-In Speed", tskPtr->speed, 1, bSpeed_input, bSpeed_plus, bSpeed_minus);
-				if (bSpeed_plus) { if (tskPtr->speed < FLT_MAX) tskPtr->speed += 0.1f; }
-				if (bSpeed_minus) { if (tskPtr->speed > -FLT_MAX) tskPtr->speed -= 0.1f; }
-				if (bSpeed_input)
+				AddNumberStepper("Blend-In Speed", tskPtr->speed, 1, 0.1);
+				AddNumberStepper("Blend-Out Speed", tskPtr->speedMultiplier, 1, 0.1);
+
+				const int numPresets = static_cast<int>(std::size(AnimFlag::kFlagPresets));
+				int currentPresetIdx = numPresets;
+				for (int i = 0; i < numPresets; i++)
 				{
-					std::string inputStr = Game::InputBox("", 6U, "", std::to_string(tskPtr->speed).substr(0, 5));
-					if (inputStr.length() > 0)
+					if (AnimFlag::kFlagPresets[i].value == tskPtr->flag)
 					{
-						try { tskPtr->speed = stof(inputStr); }
-						catch (...) { Game::Print::PrintErrorInvalidInput(inputStr); }
+						currentPresetIdx = i;
+						break;
 					}
-					//OnscreenKeyboard::State::Set(OnscreenKeyboard::Purpose::SetArg1Float, std::string(), 5U, std::string(), std::to_string(tskPtr->speed).substr(0, 5));
-					//OnscreenKeyboard::State::arg1._ptr = reinterpret_cast<void*>(&tskPtr->speed);
 				}
 
-				bool bSpeedMultiplier_plus = false, bSpeedMultiplier_minus = false, bSpeedMultiplier_input = false;
-				AddNumber("Blend-Out Speed", tskPtr->speedMultiplier, 1, bSpeedMultiplier_input, bSpeedMultiplier_plus, bSpeedMultiplier_minus);
-				if (bSpeedMultiplier_plus) { if (tskPtr->speedMultiplier < FLT_MAX) tskPtr->speedMultiplier += 0.1f; }
-				if (bSpeedMultiplier_minus) { if (tskPtr->speedMultiplier > -FLT_MAX) tskPtr->speedMultiplier -= 0.1f; }
-				if (bSpeedMultiplier_input)
-				{
-					std::string inputStr = Game::InputBox("", 6U, "", std::to_string(tskPtr->speedMultiplier).substr(0, 5));
-					if (inputStr.length() > 0)
-					{
-						try { tskPtr->speedMultiplier = stof(inputStr); }
-						catch (...) { Game::Print::PrintErrorInvalidInput(inputStr); }
-					}
-					//OnscreenKeyboard::State::Set(OnscreenKeyboard::Purpose::SetArg1Float, std::string(), 5U, std::string(), std::to_string(tskPtr->speedMultiplier).substr(0, 5));
-					//OnscreenKeyboard::State::arg1._ptr = reinterpret_cast<void*>(&tskPtr->speedMultiplier);
-				}
+				std::vector<std::string> presetLabels;
+				presetLabels.reserve(numPresets + 1);
+				for (int i = 0; i < numPresets; i++)
+					presetLabels.push_back(AnimFlag::kFlagPresets[i].name);
+				presetLabels.push_back("Custom");
 
-				bool flag_plus = false, flag_minus = false;
-				AddTexter("Flag", 0, std::vector<std::string>{ AnimFlag::vFlagNames[tskPtr->flag] }, null, flag_plus, flag_minus);
-				if (flag_plus)
-				{
-					for (auto it = AnimFlag::vFlagNames.begin(); it != AnimFlag::vFlagNames.end(); ++it)
-					{
-						if (it->first == tskPtr->flag)
-						{
-							++it;
-							if (it != AnimFlag::vFlagNames.end())
-								tskPtr->flag = it->first;
-							break;
-						}
-					}
-				};
-				if (flag_minus)
-				{
-					for (auto it = AnimFlag::vFlagNames.rbegin(); it != AnimFlag::vFlagNames.rend(); ++it)
-					{
-						if (it->first == tskPtr->flag)
-						{
-							++it;
-							if (it != AnimFlag::vFlagNames.rend())
-								tskPtr->flag = it->first;
-							break;
-						}
-					}
-				};
-
+				int newPresetIdx = AddTexterCycler("Flag Preset", currentPresetIdx, presetLabels);
+				if (newPresetIdx != currentPresetIdx && newPresetIdx < numPresets)
+					tskPtr->flag = AnimFlag::kFlagPresets[newPresetIdx].value;
 				bool bToggleLockPos = false;
-				AddTickol("Lock Position", tskPtr->lockPos, bToggleLockPos, bToggleLockPos, TICKOL::BOXTICK, TICKOL::BOXBLANK); if (bToggleLockPos)
+				AddTickol("Lock Position", tskPtr->lockPos, bToggleLockPos, bToggleLockPos, TICKOL::BOXTICK, TICKOL::BOXBLANK); 
+				if (bToggleLockPos)
 					tskPtr->lockPos = !tskPtr->lockPos;
-
-				//bool bToggleDurationToAnimDuration = false;
-				//AddTickol("Task Duration To Anim Duration", tskPtr->durationToAnimDuration, bToggleDurationToAnimDuration, bToggleDurationToAnimDuration, TICKOL::BOXTICK, TICKOL::BOXBLANK); if (bToggleDurationToAnimDuration) tskPtr->durationToAnimDuration = !tskPtr->durationToAnimDuration;
-
 			}
+
 			void PlayAnimation_allPedAnims()
 			{
 				if (_selectedSTST == nullptr)
@@ -746,7 +739,7 @@ namespace sub::Spooner
 						AddOption(current.first, bCurrentPressed); if (bCurrentPressed)
 						{
 							sub::AnimationMenu::selectedAnimDictPtr = &current;
-							Menu::SetSub_delayed = SUB::SPOONER_TASKSEQUENCE_TASKSUB_PLAYANIMATION_ALLPEDANIMS_INDICT;
+							Menu::pendingSubmenu = SUB::SPOONER_TASKSEQUENCE_TASKSUB_PLAYANIMATION_ALLPEDANIMS_INDICT;
 						}
 					}
 				}
@@ -774,10 +767,10 @@ namespace sub::Spooner
 						tskPtr->animName = current;
 					}
 
-					if (Menu::printingop == *Menu::currentopATM)
+					if (Menu::IsLastDrawnOptionSelected())
 					{
 						bool bIsAFav = IsAnimationAFavourite(selectedDict.first, current);
-						if (Menu::bitController)
+						if (Menu::usingControllerInput)
 						{
 							Menu::add_IB(INPUT_SCRIPT_RLEFT, (!bIsAFav ? "Add to" : "Remove from") + (std::string)" favourites");
 
@@ -846,7 +839,7 @@ namespace sub::Spooner
 
 				bool bRadius_plus = false, bRadius_minus = false;
 				AddNumber("Radius", thisRadius, 0, null, bRadius_plus, bRadius_minus);
-				if (*Menu::currentopATM == Menu::printingop)
+				if (Menu::IsLastDrawnOptionSelected())
 					EntityManagement::DrawRadiusDisplayingMarker(selectedEntity.handle.GetPosition(), thisRadius);
 				if (bRadius_plus) { if (thisRadius < FLT_MAX) thisRadius += 1.0f; }
 				if (bRadius_minus) { if (thisRadius > 0.0f) thisRadius -= 1.0f; }
@@ -901,7 +894,7 @@ namespace sub::Spooner
 					AddOption(v.voiceName, bVoicePressed); if (bVoicePressed)
 					{
 						sub::Speech::_currVoiceInfo = &v;
-						Menu::SetSub_delayed = SUB::SPOONER_TASKSEQUENCE_TASKSUB_PLAYSPEECHWITHVOICE_INVOICE;
+						Menu::pendingSubmenu = SUB::SPOONER_TASKSEQUENCE_TASKSUB_PLAYSPEECHWITHVOICE_INVOICE;
 					}
 				}
 			}
@@ -963,7 +956,7 @@ namespace sub::Spooner
 						{
 							thisTargetVehicle = e.handle;
 						}
-						if (*Menu::currentopATM == Menu::printingop)
+						if (Menu::IsLastDrawnOptionSelected())
 							EntityManagement::ShowArrowAboveEntity(e.handle, RGBA(0, 255, 0, 200));
 					}
 				}
@@ -990,7 +983,7 @@ namespace sub::Spooner
 						{
 							thisTargetVehicle = e.handle;
 						}
-						if (*Menu::currentopATM == Menu::printingop)
+						if (Menu::IsLastDrawnOptionSelected())
 							EntityManagement::ShowArrowAboveEntity(e.handle, RGBA(0, 255, 0, 200));
 					}
 				}
@@ -1701,7 +1694,7 @@ namespace sub::Spooner
 				}
 				else
 				{
-					Game::Print::PrintBottomCentre("~r~Error:~s~ Task list is empty.");
+					Game::Print::ShowNotification("~r~Error:", "Task list is empty.");
 					addlog(ige::LogType::LOG_WARNING, "Cannot start tasks, Task list is empty");
 				}
 			}
@@ -1722,15 +1715,15 @@ namespace sub::Spooner
 					if (taskList[i]->duration != -1) // Has settings
 					{
 						_selectedSTST = taskList[i];
-						Menu::SetSub_delayed = SUB::SPOONER_TASKSEQUENCE_INTASK;
+						Menu::pendingSubmenu = SUB::SPOONER_TASKSEQUENCE_INTASK;
 					}
 				}
 
-				if (Menu::printingop == *Menu::currentopATM)
+				if (Menu::IsLastDrawnOptionSelected())
 				{
 					bool bRemoveTaskPressed = false;
 					char bMoveTaskPressed = 0i8;
-					if (Menu::bitController)
+					if (Menu::usingControllerInput)
 					{
 						Menu::add_IB(INPUT_SCRIPT_RLEFT, "Remove");
 						bRemoveTaskPressed = IS_DISABLED_CONTROL_JUST_PRESSED(2, INPUT_SCRIPT_RLEFT) != 0;
@@ -1770,9 +1763,9 @@ namespace sub::Spooner
 
 			}
 
-			if (bMenuUpDown > 0) // Move currentop ahead
+			if (bMenuUpDown > 0) // Move selected option ahead
 			{
-				if (Menu::currentop == Menu::printingop) // Last task selected
+				if (Menu::selectedOptionIndex == Menu::currentOptionCount) // Last task selected
 				{
 					Menu::Top();
 					Menu::Down();
@@ -1781,9 +1774,9 @@ namespace sub::Spooner
 					Menu::Down();
 				//bMenuUpDown = 0;
 			}
-			else if (bMenuUpDown < 0) // Move currentop behind
+			else if (bMenuUpDown < 0) // Move selected option behind
 			{
-				if (Menu::currentop == 2) // First task selected
+				if (Menu::selectedOptionIndex == 2) // First task selected
 				{
 					Menu::Bottom();
 					Menu::Up();
