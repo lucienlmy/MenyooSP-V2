@@ -529,7 +529,7 @@ void GTAentity::SetRotation(Vector3 value)
 Vector3 GTAentity::GetScale() const
 {
 	UINT64 ptr = GTAmemory::_entityAddressFunc(mHandle);
-	if (!ptr) return Vector3(1.0f, 1.0f, 1.0f);
+	if (!ptr) return { 1.0f, 1.0f, 1.0f };
 
 	// atox fixes: scale = vector lengths (the diagonal also holds rotation)
 	Vector3 r = GTAmemory::ReadVector3(ptr + kEntityRightVecOffset);
@@ -543,9 +543,9 @@ void GTAentity::SetScale(Vector3 value)
 	UINT64 ptr = GTAmemory::_entityAddressFunc(mHandle);
 	if (!ptr) return;
 
-	if (value.x < 0.01f) value.x = 0.01f;
-	if (value.y < 0.01f) value.y = 0.01f;
-	if (value.z < 0.01f) value.z = 0.01f;
+	value.x = max(0.01f, value.x);
+	value.y = max(0.01f, value.y);
+	value.z = max(0.01f, value.z);
 
 	// keep direction, only change length
 	auto apply = [](UINT64 m, float sx, float sy, float sz) {
@@ -562,7 +562,7 @@ void GTAentity::SetScale(Vector3 value)
 
 	if (IsVehicle())
 	{
-		UINT64 drawPtr = *reinterpret_cast<UINT64*>(ptr + 0x30);
+		UINT64 drawPtr = *(UINT64*)(ptr + 0x30);
 		if (drawPtr) apply(drawPtr + 0x20, value.x, value.y, value.z);
 	}
 
