@@ -29,8 +29,7 @@
 #include "GTAblip.h"
 #include "Model.h"
 #include "Raycast.h"
-
-#include <string>
+#include "..\Util\FileLogger.h"
 
 namespace 
 {
@@ -38,6 +37,135 @@ namespace
 	inline constexpr UINT64 kEntityRightVecOffset    = 0x60; // matrix row, right vector
 	inline constexpr UINT64 kEntityForwardVecOffset  = 0x70; // matrix row, forward vector
 	inline constexpr UINT64 kEntityUpVecOffset       = 0x80; // matrix row, up vector
+}
+
+namespace
+{
+	// atox fixes: run f(), catch access violations only
+	template <typename F>
+	bool RunGuarded(F&& f)
+	{
+		__try { f(); return true; }
+		__except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
+	}
+
+	// atox fixes: manual attach for scaled entities
+	struct ManualAttachment
+	{
+		int child;
+		int parent;
+		int bone;
+		Vector3 offset;
+		Vector3 rotation;
+		Vector3 scale;
+		bool prevFrozen;
+		bool prevCollision;
+	};
+	std::vector<ManualAttachment> g_manualAttachments;
+
+	ManualAttachment* FindManualAttachment(int child)
+	{
+		for (auto& a : g_manualAttachments)
+			if (a.child == child) return &a;
+		return nullptr;
+	}
+
+	// atox fixes: drop entry, restore old collision/freeze
+	void ReleaseManualAttachment(int childHandle)
+	{
+		for (size_t i = 0; i < g_manualAttachments.size(); ++i)
+		{
+			if (g_manualAttachments[i].child != childHandle) continue;
+			ManualAttachment a = g_manualAttachments[i];
+			g_manualAttachments.erase(g_manualAttachments.begin() + i);
+			GTAentity child(a.child);
+			if (child.Exists())
+			{
+				child.SetIsCollisionEnabled(a.prevCollision);
+				FREEZE_ENTITY_POSITION(a.child, a.prevFrozen);
+			}
+			return;
+		}
+	}
+
+	bool IsScaledEntity(const GTAentity& e)
+	{
+		Vector3 s = e.GetScale();
+		return std::fabs(s.x - 1.0f) > 0.01f || std::fabs(s.y - 1.0f) > 0.01f || std::fabs(s.z - 1.0f) > 0.01f;
+	}
+
+	// atox fixes: true = attached manually (scaled), false = use native attach
+	bool TryAttachManuallyImpl(GTAentity child, GTAentity parent, int bone, const Vector3& offset, const Vector3& rotation)
+	{
+		const int ch = child.GetHandle();
+		if (ch == parent.GetHandle()) return false;
+		{
+			// atox fixes: cycle check, skip the attach
+			int cur = parent.GetHandle();
+			for (int depth = 0; depth < 16; ++depth)
+			{
+				if (cur == ch) return true;
+				ManualAttachment* p = FindManualAttachment(cur);
+				if (!p) break;
+				cur = p->parent;
+			}
+		}
+		if (!IsScaledEntity(child))
+		{
+			ReleaseManualAttachment(ch); // not scaled anymore, native attach
+			return false;
+		}
+		ManualAttachment* a = FindManualAttachment(ch);
+		if (!a)
+		{
+			if (IS_ENTITY_ATTACHED(ch)) DETACH_ENTITY(ch, 1, 1); // atox fixes: drop native attach first
+			ManualAttachment n{};
+			n.child = ch;
+			n.prevFrozen = child.IsPositionFrozen();
+			n.prevCollision = child.GetIsCollisionEnabled();
+			g_manualAttachments.push_back(n);
+			a = &g_manualAttachments.back();
+		}
+		a->parent = parent.GetHandle();
+		a->bone = bone;
+		a->offset = offset;
+		a->rotation = rotation;
+		a->scale = child.GetScale();
+		child.SetIsCollisionEnabled(false);
+		FREEZE_ENTITY_POSITION(child.GetHandle(), true);
+		return true;
+	}
+
+	bool g_manualAttachDisabled = false;
+
+	// atox fixes: disable manual attach after an exception
+	void HandleManualFailure(const char* msg)
+	{
+		addlog(ige::LogType::LOG_ERROR, msg);
+		g_manualAttachDisabled = true;
+		for (auto& a : g_manualAttachments)
+		{
+			int h = a.child;
+			bool pc = a.prevCollision;
+			bool pf = a.prevFrozen;
+			RunGuarded([&]() {
+				if (DOES_ENTITY_EXIST(h)) { SET_ENTITY_COLLISION(h, pc, false); FREEZE_ENTITY_POSITION(h, pf); }
+			});
+		}
+		g_manualAttachments.clear();
+	}
+
+	bool TryAttachManually(GTAentity child, GTAentity parent, int bone, const Vector3& offset, const Vector3& rotation)
+	{
+		if (g_manualAttachDisabled) return false;
+		bool result = false;
+		if (!RunGuarded([&]() { result = TryAttachManuallyImpl(child, parent, bone, offset, rotation); }))
+		{
+			HandleManualFailure("Exception in TryAttachManually");
+			return false;
+		}
+		return result;
+	}
 }
 
 GTAentity& GTAentity::operator = (const GTAentity& value)
@@ -403,21 +531,11 @@ Vector3 GTAentity::GetScale() const
 	UINT64 ptr = GTAmemory::_entityAddressFunc(mHandle);
 	if (!ptr) return { 1.0f, 1.0f, 1.0f };
 
-	if (IsVehicle() || IsPed())
-	{
-		Vector3 r = GTAmemory::ReadVector3(ptr + 0x60);
-		Vector3 f = GTAmemory::ReadVector3(ptr + 0x70);
-		Vector3 u = GTAmemory::ReadVector3(ptr + 0x80);
-		return { r.Length(), f.Length(), u.Length() };
-	}
-	else
-	{
-		return {
-			GTAmemory::ReadFloat(ptr + 0x60),
-			GTAmemory::ReadFloat(ptr + 0x74),
-			GTAmemory::ReadFloat(ptr + 0x88)
-		};
-	}
+	// atox fixes: scale = vector lengths (the diagonal also holds rotation)
+	Vector3 r = GTAmemory::ReadVector3(ptr + kEntityRightVecOffset);
+	Vector3 f = GTAmemory::ReadVector3(ptr + kEntityForwardVecOffset);
+	Vector3 u = GTAmemory::ReadVector3(ptr + kEntityUpVecOffset);
+	return Vector3(r.Length(), f.Length(), u.Length());
 }
 
 void GTAentity::SetScale(Vector3 value)
@@ -429,43 +547,27 @@ void GTAentity::SetScale(Vector3 value)
 	value.y = max(0.01f, value.y);
 	value.z = max(0.01f, value.z);
 
+	// keep direction, only change length
+	auto apply = [](UINT64 m, float sx, float sy, float sz) {
+		Vector3 r = GTAmemory::ReadVector3(m);
+		Vector3 f = GTAmemory::ReadVector3(m + 0x10);
+		Vector3 u = GTAmemory::ReadVector3(m + 0x20);
+		float lr = r.Length(), lf = f.Length(), lu = u.Length();
+		if (lr > 0.0001f) GTAmemory::WriteVector3(m, r * (sx / lr));
+		if (lf > 0.0001f) GTAmemory::WriteVector3(m + 0x10, f * (sy / lf));
+		if (lu > 0.0001f) GTAmemory::WriteVector3(m + 0x20, u * (sz / lu));
+	};
+
+	apply(ptr + kEntityRightVecOffset, value.x, value.y, value.z);
+
 	if (IsVehicle())
 	{
 		UINT64 drawPtr = *(UINT64*)(ptr + 0x30);
-		auto apply = [](UINT64 m, float sx, float sy, float sz) {
-			Vector3 r = GTAmemory::ReadVector3(m);
-			Vector3 f = GTAmemory::ReadVector3(m + 0x10);
-			Vector3 u = GTAmemory::ReadVector3(m + 0x20);
-			float lr = r.Length(), lf = f.Length(), lu = u.Length();
-			if (lr > 0.0001f) GTAmemory::WriteVector3(m, r * (sx / lr));
-			if (lf > 0.0001f) GTAmemory::WriteVector3(m + 0x10, f * (sy / lf));
-			if (lu > 0.0001f) GTAmemory::WriteVector3(m + 0x20, u * (sz / lu));
-		};
-		apply(ptr + 0x60, value.x, value.y, value.z);
 		if (drawPtr) apply(drawPtr + 0x20, value.x, value.y, value.z);
-		GTAmemory::WriteFloat(ptr + 0x60, value.x);
-		GTAmemory::WriteFloat(ptr + 0x74, value.y);
-		GTAmemory::WriteFloat(ptr + 0x88, value.z);
 	}
-	else if (IsPed())
-	{
-		auto apply = [](UINT64 m, float sx, float sy, float sz) {
-			Vector3 r = GTAmemory::ReadVector3(m);
-			Vector3 f = GTAmemory::ReadVector3(m + 0x10);
-			Vector3 u = GTAmemory::ReadVector3(m + 0x20);
-			float lr = r.Length(), lf = f.Length(), lu = u.Length();
-			if (lr > 0.0001f) GTAmemory::WriteVector3(m, r * (sx / lr));
-			if (lf > 0.0001f) GTAmemory::WriteVector3(m + 0x10, f * (sy / lf));
-			if (lu > 0.0001f) GTAmemory::WriteVector3(m + 0x20, u * (sz / lu));
-		};
-		apply(ptr + 0x60, value.x, value.y, value.z);
-	}
-	else
-	{
-		GTAmemory::WriteFloat(ptr + 0x60, value.x);
-		GTAmemory::WriteFloat(ptr + 0x74, value.y);
-		GTAmemory::WriteFloat(ptr + 0x88, value.z);
-	}
+
+	// keep manual attach scale in sync
+	if (ManualAttachment* a = FindManualAttachment(mHandle)) a->scale = value;
 }
 
 Vector3 GTAentity::GetDirection() const
@@ -732,17 +834,77 @@ bool GTAentity::HasBone(VBone::VBone value) const
 
 bool GTAentity::IsAttached() const
 {
-	return IS_ENTITY_ATTACHED(this->mHandle) != 0;
+	return IS_ENTITY_ATTACHED(this->mHandle) != 0 || FindManualAttachment(this->mHandle) != nullptr;
 }
 
 bool GTAentity::IsAttachedTo(const GTAentity& to) const
 {
-	return IS_ENTITY_ATTACHED_TO_ENTITY(this->mHandle, to.mHandle) != 0;
+	if (IS_ENTITY_ATTACHED_TO_ENTITY(this->mHandle, to.mHandle) != 0) return true;
+	ManualAttachment* a = FindManualAttachment(this->mHandle);
+	return a && a->parent == to.mHandle;
 }
 
 void GTAentity::Detach()
 {
+	if (FindManualAttachment(this->mHandle))
+	{
+		ReleaseManualAttachment(this->mHandle);
+		return;
+	}
 	DETACH_ENTITY(this->mHandle, 1, 1);
+}
+
+bool GTAentity::GetManualAttachParent(const GTAentity& child, GTAentity& parentOut)
+{
+	ManualAttachment* a = FindManualAttachment(child.GetHandle());
+	if (!a) return false;
+	parentOut = GTAentity(a->parent);
+	return true;
+}
+
+static void UpdateManualAttachmentsImpl()
+{
+	for (size_t i = 0; i < g_manualAttachments.size(); )
+	{
+		ManualAttachment a = g_manualAttachments[i];
+		GTAentity child(a.child), parent(a.parent);
+		if (!child.Exists() || !parent.Exists())
+		{
+			ReleaseManualAttachment(a.child); // entry gone, no i++
+			continue;
+		}
+
+		// atox fixes: natives only, no direct memory reads
+		Vector3 parentRotation = parent.GetRotation();
+		Mat3 pr = EulerToMatrix(parentRotation);
+		Vector3 pos;
+		if (a.bone > 0)
+		{
+			// bone world pos + offset rotated by parent (approx)
+			Vector3 bp = parent.GetBoneCoords(a.bone);
+			const Vector3& o = a.offset;
+			pos = Vector3(bp.x + pr.m[0][0] * o.x + pr.m[0][1] * o.y + pr.m[0][2] * o.z,
+			              bp.y + pr.m[1][0] * o.x + pr.m[1][1] * o.y + pr.m[1][2] * o.z,
+			              bp.z + pr.m[2][0] * o.x + pr.m[2][1] * o.y + pr.m[2][2] * o.z);
+		}
+		else
+		{
+			pos = parent.GetOffsetInWorldCoords(a.offset);
+		}
+
+		Mat3 world = pr * EulerToMatrix(a.rotation);
+		child.SetRotation(MatrixToEuler(world)); // rotation resets matrix scale, reapply after
+		child.SetPosition(pos);
+		child.SetScale(a.scale);
+		++i;
+	}
+}
+
+void GTAentity::UpdateManualAttachments()
+{
+	if (g_manualAttachments.empty()) return;
+	if (!RunGuarded([]() { UpdateManualAttachmentsImpl(); }))
+		HandleManualFailure("Exception in UpdateManualAttachments");
 }
 
 void GTAentity::AttachTo(GTAentity entity, int boneIndex, bool collision)
@@ -752,11 +914,13 @@ void GTAentity::AttachTo(GTAentity entity, int boneIndex, bool collision)
 
 void GTAentity::AttachTo(GTAentity entity, int boneIndex, bool collision, Vector3 position, Vector3 rotation)
 {
+	if (TryAttachManually(*this, entity, boneIndex, position, rotation)) return;
 	ATTACH_ENTITY_TO_ENTITY(this->mHandle, entity.Handle(), boneIndex, position.x, position.y, position.z, rotation.x, rotation.y, rotation.z, false, false, collision, false, 2, true, 0);
 }
 
 void GTAentity::AttachTo(GTAentity entity, int boneIndex, Vector3 position, Vector3 rotation, bool b9, bool useSoftPinning, bool collision, bool isPed, int vertexIndex, bool fixedRot)
 {
+	if (TryAttachManually(*this, entity, boneIndex, position, rotation)) return;
 	ATTACH_ENTITY_TO_ENTITY(this->mHandle, entity.Handle(), boneIndex, position.x, position.y, position.z, rotation.x, rotation.y, rotation.z, b9, useSoftPinning, collision, isPed, vertexIndex, fixedRot, 0);
 }
 
